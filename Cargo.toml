@@ -13,6 +13,11 @@ edition = "2024"
 
 [workspace.dependencies]
 libnotcurses-sys = "3.11"
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json", "blocking"] }
 
 [package]
 name = "exospace"

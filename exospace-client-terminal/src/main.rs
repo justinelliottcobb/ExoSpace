@@ -1,13 +1,27 @@
 use libnotcurses_sys::*;
+use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
+/// Server URL for map fetching
+const SERVER_URL: &str = "http://localhost:3000";
+
 /// Tile types in the map
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 enum Tile {
     Wall,
     Floor,
     Asteroid,
     Nebula,
+}
+
+/// Map data received from server
+#[derive(Deserialize)]
+struct MapData {
+    tiles: Vec<Vec<Tile>>,
+    width: usize,
+    height: usize,
+    start_x: i32,
+    start_y: i32,
 }
 
 impl Tile {
@@ -88,10 +102,35 @@ struct Map {
     tiles: Vec<Vec<Tile>>,
     width: usize,
     height: usize,
+    start_position: Option<(i32, i32)>,
 }
 
 impl Map {
-    fn generate(width: usize, height: usize) -> Self {
+    /// Fetch map from the server
+    fn fetch_from_server() -> Result<Self, String> {
+        let url = format!("{}/map", SERVER_URL);
+
+        let response = reqwest::blocking::get(&url)
+            .map_err(|e| format!("Failed to connect to server: {}", e))?;
+
+        if !response.status().is_success() {
+            return Err(format!("Server returned error: {}", response.status()));
+        }
+
+        let map_data: MapData = response
+            .json()
+            .map_err(|e| format!("Failed to parse map data: {}", e))?;
+
+        Ok(Map {
+            tiles: map_data.tiles,
+            width: map_data.width,
+            height: map_data.height,
+            start_position: Some((map_data.start_x, map_data.start_y)),
+        })
+    }
+
+    /// Generate map locally (fallback)
+    fn generate_local(width: usize, height: usize) -> Self {
         let mut tiles = vec![vec![Tile::Wall; width]; height];
 
         let mut rng_state: u64 = 12345;
@@ -221,7 +260,21 @@ impl Map {
             tiles[y][width - 1] = Tile::Wall;
         }
 
-        Map { tiles, width, height }
+        Map { tiles, width, height, start_position: None }
+    }
+
+    /// Get map from server, falling back to local generation
+    fn new() -> Self {
+        match Self::fetch_from_server() {
+            Ok(map) => {
+                eprintln!("Connected to server, map loaded");
+                map
+            }
+            Err(e) => {
+                eprintln!("Server unavailable ({}), generating local map", e);
+                Self::generate_local(500, 200)
+            }
+        }
     }
 
     fn get(&self, x: i32, y: i32) -> Option<Tile> {
@@ -239,6 +292,12 @@ impl Map {
     }
 
     fn find_start_position(&self) -> (i32, i32) {
+        // Use server-provided start position if available
+        if let Some(pos) = self.start_position {
+            return pos;
+        }
+
+        // Otherwise search for one
         let center_x = self.width / 2;
         let center_y = self.height / 2;
 
@@ -300,30 +359,24 @@ impl Renderer {
 
         match tile {
             Some(Tile::Wall) => {
-                // Vibrant wall colors - electric blues, cyans, purples
+                // Subtle wall colors - mostly blue with occasional variation
                 let wall_variant = pos_hash % 100;
-                let base_color = if wall_variant < 40 {
-                    // Electric blue walls
-                    let intensity = 0x60 + ((pos_hash % 0x40) as u32);
-                    (0x20 << 16) | (intensity << 8) | 0xFF
-                } else if wall_variant < 60 {
-                    // Cyan-tinted walls
-                    0x40CCCC
-                } else if wall_variant < 75 {
-                    // Purple accent walls
-                    0x8040C0
-                } else if wall_variant < 90 {
-                    // Teal metallic
-                    0x309090
+                let base_color = if wall_variant < 70 {
+                    // Standard blue walls
+                    let intensity = 0x50 + ((pos_hash % 0x20) as u32);
+                    (0x20 << 16) | (intensity << 8) | 0xC0
+                } else if wall_variant < 85 {
+                    // Slightly cyan-tinted
+                    0x3090A0
                 } else {
-                    // Bright highlights
-                    0x60A0D0
+                    // Occasional purple accent
+                    0x604080
                 };
 
-                // Different wall characters for texture - block chars are safe
-                let ch = match pos_hash % 8 {
-                    0..=5 => '█',
-                    6 => '▓',
+                // Mostly solid blocks
+                let ch = match pos_hash % 12 {
+                    0..=9 => '█',
+                    10 => '▓',
                     _ => '▒',
                 };
 
@@ -331,32 +384,20 @@ impl Renderer {
             }
 
             Some(Tile::Floor) => {
-                // Starfield with more colorful stars
-                let star_chance = pos_hash % 25;  // More frequent stars
+                // Sparse starfield
+                let star_chance = pos_hash % 50;  // Less frequent stars
 
                 if star_chance == 0 {
-                    // Bright twinkling star
-                    let twinkle = ((self.frame / 8) + (pos_hash as u64)) % 4;
-                    let colors = [0xFFFFFF, 0xFFFF80, 0x80FFFF, 0xFFFFFF];
+                    // Twinkling star (slower animation)
+                    let twinkle = ((self.frame / 16) + (pos_hash as u64)) % 4;
+                    let colors = [0xC0C0C0, 0xD0D0A0, 0xA0C0C0, 0xC0C0C0];
                     (self.star_chars[twinkle as usize], colors[twinkle as usize])
                 } else if star_chance == 1 {
                     // Blue star
-                    ('*', 0x6080FF)
+                    ('.', 0x5070C0)
                 } else if star_chance == 2 {
-                    // Red giant
-                    ('*', 0xFF6040)
-                } else if star_chance == 3 {
-                    // Yellow star
-                    ('*', 0xFFCC00)
-                } else if star_chance == 4 {
-                    // Cyan star
-                    ('.', 0x00FFFF)
-                } else if star_chance == 5 {
                     // Dim white star
-                    ('.', 0x606060)
-                } else if star_chance == 6 {
-                    // Purple distant star
-                    ('.', 0x8060A0)
+                    ('.', 0x505050)
                 } else {
                     // Empty space
                     (' ', 0x000000)
@@ -364,66 +405,60 @@ impl Renderer {
             }
 
             Some(Tile::Asteroid) => {
-                // Rotating asteroid with more color variety
-                let rotation = ((self.frame / 12) + (pos_hash as u64 / 3)) % 4;
+                // Slower rotating asteroid
+                let rotation = ((self.frame / 24) + (pos_hash as u64 / 3)) % 4;
                 let ch = self.asteroid_chars[rotation as usize];
 
-                // More varied asteroid colors - rusty reds, metallic blues
-                let color_variant = pos_hash % 6;
+                // Muted asteroid colors
+                let color_variant = pos_hash % 4;
                 let color = match color_variant {
-                    0 => 0xCC8844, // Bright rust
-                    1 => 0x88AACC, // Metallic blue
-                    2 => 0xAA6633, // Copper
-                    3 => 0x999999, // Silver
-                    4 => 0xBB7744, // Bronze
-                    _ => 0x77AAAA, // Teal-grey
+                    0 => 0x907050, // Brown
+                    1 => 0x707070, // Grey
+                    2 => 0x806040, // Dark brown
+                    _ => 0x808080, // Light grey
                 };
 
                 (ch, color)
             }
 
             Some(Tile::Nebula) => {
-                // Vibrant, colorful nebula with flowing animation
-                let flow = ((self.frame / 4) as i32 + x / 3 + y / 2) % 20;
+                // Subtle nebula with slow animation
+                let flow = ((self.frame / 12) as i32 + x / 5 + y / 4) % 20;
 
-                // Much brighter nebula colors by region
-                let region = hash_position(x / 15, y / 15, 123);
-                let base_hue = region % 8;
+                // Muted nebula colors by region
+                let region = hash_position(x / 20, y / 20, 123);
+                let base_hue = region % 6;
 
                 let (r, g, b) = match base_hue {
-                    0 => (0xFF, 0x40, 0xFF), // Hot magenta
-                    1 => (0x40, 0xFF, 0xFF), // Bright cyan
-                    2 => (0xFF, 0x80, 0x40), // Orange fire
-                    3 => (0x80, 0x40, 0xFF), // Deep purple
-                    4 => (0x40, 0xFF, 0x80), // Electric green
-                    5 => (0xFF, 0x40, 0x80), // Pink
-                    6 => (0x60, 0x80, 0xFF), // Soft blue
-                    _ => (0xFF, 0xFF, 0x40), // Yellow
+                    0 => (0x80, 0x40, 0x80), // Soft purple
+                    1 => (0x40, 0x70, 0x80), // Muted cyan
+                    2 => (0x80, 0x50, 0x40), // Soft orange
+                    3 => (0x50, 0x40, 0x80), // Deep purple
+                    4 => (0x40, 0x70, 0x50), // Soft green
+                    _ => (0x50, 0x50, 0x70), // Grey-blue
                 };
 
-                // Animated intensity - pulsing brighter
-                let pulse = ((flow as u32 % 10) * 8) as i32;
-                let dim = 40 + (pos_hash % 30) as i32;  // Base dimming for depth
+                // Gentler pulsing
+                let pulse = ((flow as u32 % 10) * 3) as i32;
+                let dim = 20 + (pos_hash % 20) as i32;
                 let color = ((((r as i32 - dim + pulse).max(0).min(255)) as u32) << 16)
                     | ((((g as i32 - dim + pulse).max(0).min(255)) as u32) << 8)
                     | (((b as i32 - dim + pulse).max(0).min(255)) as u32);
 
-                // Simple single-width nebula characters only
-                let ch = match (pos_hash + self.frame as u32 / 6) % 5 {
+                // Fewer animated characters
+                let ch = match (pos_hash + self.frame as u32 / 12) % 8 {
                     0 => '.',
                     1 => ':',
-                    2 => '*',
-                    3 => '+',
-                    _ => '~',
+                    _ => ' ',
                 };
 
                 (ch, color)
             }
 
             None => {
-                // Out of bounds - deep void with rare distant stars
-                if pos_hash % 60 == 0 {
-                    ('.', 0x303040)
+                // Out of bounds - mostly empty
+                if pos_hash % 100 == 0 {
+                    ('.', 0x202030)
                 } else {
                     (' ', 0x000000)
                 }
@@ -608,7 +643,7 @@ impl Player {
 fn main() -> NcResult<()> {
     let nc = unsafe { Nc::new()? };
 
-    let map = Map::generate(500, 200);
+    let map = Map::new();
     let start = map.find_start_position();
     let mut player = Player::new(start.0, start.1);
     let mut renderer = Renderer::new();
@@ -824,7 +859,7 @@ mod tests {
 
     #[test]
     fn test_map_dimensions() {
-        let map = Map::generate(100, 50);
+        let map = Map::generate_local(100, 50);
         assert_eq!(map.width, 100);
         assert_eq!(map.height, 50);
         assert_eq!(map.tiles.len(), 50); // height rows
@@ -833,7 +868,7 @@ mod tests {
 
     #[test]
     fn test_map_has_walls_and_floors() {
-        let map = Map::generate(100, 50);
+        let map = Map::generate_local(100, 50);
 
         let has_walls = map.tiles.iter().flatten().any(|t| *t == Tile::Wall);
         let has_floors = map.tiles.iter().flatten().any(|t| *t == Tile::Floor);
@@ -844,7 +879,7 @@ mod tests {
 
     #[test]
     fn test_map_border_is_walls() {
-        let map = Map::generate(100, 50);
+        let map = Map::generate_local(100, 50);
 
         // Check top and bottom borders
         for x in 0..100 {
@@ -861,7 +896,7 @@ mod tests {
 
     #[test]
     fn test_map_get_out_of_bounds() {
-        let map = Map::generate(100, 50);
+        let map = Map::generate_local(100, 50);
 
         assert_eq!(map.get(-1, 0), None);
         assert_eq!(map.get(0, -1), None);
@@ -871,7 +906,7 @@ mod tests {
 
     #[test]
     fn test_map_is_passable() {
-        let map = Map::generate(100, 50);
+        let map = Map::generate_local(100, 50);
 
         // Border should not be passable
         assert!(!map.is_passable(0, 0));
@@ -884,7 +919,7 @@ mod tests {
 
     #[test]
     fn test_map_find_start_position_is_passable() {
-        let map = Map::generate(100, 50);
+        let map = Map::generate_local(100, 50);
         let (x, y) = map.find_start_position();
 
         assert!(map.is_passable(x, y), "Start position must be passable");
@@ -904,7 +939,7 @@ mod tests {
 
     #[test]
     fn test_player_move_updates_direction() {
-        let map = Map::generate(100, 50);
+        let map = Map::generate_local(100, 50);
         let start = map.find_start_position();
         let mut player = Player::new(start.0, start.1);
 
@@ -919,7 +954,7 @@ mod tests {
 
     #[test]
     fn test_player_no_move_on_zero_delta() {
-        let map = Map::generate(100, 50);
+        let map = Map::generate_local(100, 50);
         let start = map.find_start_position();
         let mut player = Player::new(start.0, start.1);
         let original_dir = player.direction;
@@ -931,7 +966,7 @@ mod tests {
 
     #[test]
     fn test_player_collision_with_wall() {
-        let map = Map::generate(100, 50);
+        let map = Map::generate_local(100, 50);
         let mut player = Player::new(1, 1); // Near the wall border
 
         // Try to move into the wall (border is at x=0)
