@@ -238,14 +238,95 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    // ==================== Tile Tests ====================
 
     #[test]
     fn test_tile_passability() {
-        assert!(Tile::Floor.is_passable());
-        assert!(Tile::Nebula.is_passable());
-        assert!(!Tile::Wall.is_passable());
-        assert!(!Tile::Asteroid.is_passable());
+        assert!(Tile::Floor.is_passable(), "Floor should be passable");
+        assert!(Tile::Nebula.is_passable(), "Nebula should be passable");
+        assert!(!Tile::Wall.is_passable(), "Wall should not be passable");
+        assert!(!Tile::Asteroid.is_passable(), "Asteroid should not be passable");
     }
+
+    #[test]
+    fn test_tile_serialization() {
+        // Test JSON serialization round-trip
+        let tiles = vec![Tile::Wall, Tile::Floor, Tile::Asteroid, Tile::Nebula];
+        for tile in tiles {
+            let json = serde_json::to_string(&tile).unwrap();
+            let parsed: Tile = serde_json::from_str(&json).unwrap();
+            assert_eq!(tile, parsed);
+        }
+    }
+
+    #[test]
+    fn test_tile_json_format() {
+        // Verify exact JSON format
+        assert_eq!(serde_json::to_string(&Tile::Wall).unwrap(), "\"Wall\"");
+        assert_eq!(serde_json::to_string(&Tile::Floor).unwrap(), "\"Floor\"");
+        assert_eq!(serde_json::to_string(&Tile::Asteroid).unwrap(), "\"Asteroid\"");
+        assert_eq!(serde_json::to_string(&Tile::Nebula).unwrap(), "\"Nebula\"");
+    }
+
+    // ==================== Hash Function Tests ====================
+
+    #[test]
+    fn test_hash_position_deterministic() {
+        let hash1 = hash_position(10, 20, 42);
+        let hash2 = hash_position(10, 20, 42);
+        assert_eq!(hash1, hash2, "Same inputs should produce same hash");
+    }
+
+    #[test]
+    fn test_hash_position_different_x() {
+        let hash1 = hash_position(10, 20, 42);
+        let hash2 = hash_position(11, 20, 42);
+        assert_ne!(hash1, hash2, "Different x should produce different hash");
+    }
+
+    #[test]
+    fn test_hash_position_different_y() {
+        let hash1 = hash_position(10, 20, 42);
+        let hash2 = hash_position(10, 21, 42);
+        assert_ne!(hash1, hash2, "Different y should produce different hash");
+    }
+
+    #[test]
+    fn test_hash_position_different_seed() {
+        let hash1 = hash_position(10, 20, 42);
+        let hash2 = hash_position(10, 20, 43);
+        assert_ne!(hash1, hash2, "Different seed should produce different hash");
+    }
+
+    #[test]
+    fn test_hash_position_negative_coords() {
+        // Should not panic with negative coordinates
+        let hash1 = hash_position(-10, -20, 42);
+        let hash2 = hash_position(-10, -20, 42);
+        assert_eq!(hash1, hash2, "Negative coords should still be deterministic");
+    }
+
+    #[test]
+    fn test_hash_position_distribution() {
+        // Test that hash produces reasonably distributed values
+        let mut values = std::collections::HashSet::new();
+        for x in 0..100 {
+            for y in 0..100 {
+                values.insert(hash_position(x, y, 42));
+            }
+        }
+        // Should have many unique values (good distribution)
+        assert!(values.len() > 9000, "Hash should have good distribution");
+    }
+
+    // ==================== MapGenerator RNG Tests ====================
 
     #[test]
     fn test_map_generator_deterministic() {
@@ -255,9 +336,9 @@ mod tests {
         let map1 = generator1.generate(100, 50);
         let map2 = generator2.generate(100, 50);
 
-        assert_eq!(map1.tiles, map2.tiles);
-        assert_eq!(map1.start_x, map2.start_x);
-        assert_eq!(map1.start_y, map2.start_y);
+        assert_eq!(map1.tiles, map2.tiles, "Same seed should produce same tiles");
+        assert_eq!(map1.start_x, map2.start_x, "Same seed should produce same start_x");
+        assert_eq!(map1.start_y, map2.start_y, "Same seed should produce same start_y");
     }
 
     #[test]
@@ -268,9 +349,41 @@ mod tests {
         let map1 = generator1.generate(100, 50);
         let map2 = generator2.generate(100, 50);
 
-        // Maps with different seeds should be different
-        assert_ne!(map1.tiles, map2.tiles);
+        assert_ne!(map1.tiles, map2.tiles, "Different seeds should produce different maps");
     }
+
+    #[test]
+    fn test_map_generator_rand_deterministic() {
+        let mut gen1 = MapGenerator::new(12345);
+        let mut gen2 = MapGenerator::new(12345);
+
+        for _ in 0..100 {
+            assert_eq!(gen1.rand(), gen2.rand(), "RNG should be deterministic");
+        }
+    }
+
+    #[test]
+    fn test_map_generator_rand_sequence_varies() {
+        let mut generator = MapGenerator::new(12345);
+        let mut values = Vec::new();
+        for _ in 0..100 {
+            values.push(generator.rand());
+        }
+        // Check that not all values are the same
+        let first = values[0];
+        assert!(!values.iter().all(|&v| v == first), "RNG should produce varying values");
+    }
+
+    #[test]
+    fn test_map_generator_rand_range() {
+        let mut generator = MapGenerator::new(12345);
+        for _ in 0..1000 {
+            let value = generator.rand();
+            assert!(value <= 0x7fff, "RNG values should be <= 0x7fff");
+        }
+    }
+
+    // ==================== Map Dimension Tests ====================
 
     #[test]
     fn test_map_dimensions() {
@@ -279,9 +392,37 @@ mod tests {
 
         assert_eq!(map.width, 100);
         assert_eq!(map.height, 50);
-        assert_eq!(map.tiles.len(), 50);
-        assert_eq!(map.tiles[0].len(), 100);
+        assert_eq!(map.tiles.len(), 50, "Should have 'height' rows");
+        assert_eq!(map.tiles[0].len(), 100, "Each row should have 'width' columns");
     }
+
+    #[test]
+    fn test_map_various_dimensions() {
+        let test_cases = [(50, 30), (200, 100), (500, 200), (1000, 500)];
+
+        for (width, height) in test_cases {
+            let mut generator = MapGenerator::new(12345);
+            let map = generator.generate(width, height);
+
+            assert_eq!(map.width, width, "Map width should match requested");
+            assert_eq!(map.height, height, "Map height should match requested");
+            assert_eq!(map.tiles.len(), height);
+            for row in &map.tiles {
+                assert_eq!(row.len(), width);
+            }
+        }
+    }
+
+    #[test]
+    fn test_map_small_dimensions() {
+        let mut generator = MapGenerator::new(12345);
+        let map = generator.generate(20, 10);
+
+        assert_eq!(map.width, 20);
+        assert_eq!(map.height, 10);
+    }
+
+    // ==================== Map Content Tests ====================
 
     #[test]
     fn test_map_has_all_tile_types() {
@@ -300,6 +441,55 @@ mod tests {
     }
 
     #[test]
+    fn test_map_border_is_walls() {
+        let mut generator = MapGenerator::new(12345);
+        let map = generator.generate(100, 50);
+
+        // Check top border
+        for x in 0..100 {
+            assert_eq!(map.tiles[0][x], Tile::Wall, "Top border at x={} should be wall", x);
+        }
+
+        // Check bottom border
+        for x in 0..100 {
+            assert_eq!(map.tiles[49][x], Tile::Wall, "Bottom border at x={} should be wall", x);
+        }
+
+        // Check left border
+        for y in 0..50 {
+            assert_eq!(map.tiles[y][0], Tile::Wall, "Left border at y={} should be wall", y);
+        }
+
+        // Check right border
+        for y in 0..50 {
+            assert_eq!(map.tiles[y][99], Tile::Wall, "Right border at y={} should be wall", y);
+        }
+    }
+
+    #[test]
+    fn test_map_has_interior_floor() {
+        let mut generator = MapGenerator::new(12345);
+        let map = generator.generate(100, 50);
+
+        // There should be floor tiles in the interior
+        let mut has_interior_floor = false;
+        for y in 1..49 {
+            for x in 1..99 {
+                if map.tiles[y][x] == Tile::Floor {
+                    has_interior_floor = true;
+                    break;
+                }
+            }
+            if has_interior_floor {
+                break;
+            }
+        }
+        assert!(has_interior_floor, "Map should have floor tiles in interior");
+    }
+
+    // ==================== Start Position Tests ====================
+
+    #[test]
     fn test_start_position_is_passable() {
         let mut generator = MapGenerator::new(12345);
         let map = generator.generate(100, 50);
@@ -309,9 +499,289 @@ mod tests {
     }
 
     #[test]
-    fn test_hash_position_deterministic() {
-        let hash1 = hash_position(10, 20, 42);
-        let hash2 = hash_position(10, 20, 42);
-        assert_eq!(hash1, hash2);
+    fn test_start_position_within_bounds() {
+        let mut generator = MapGenerator::new(12345);
+        let map = generator.generate(100, 50);
+
+        assert!(map.start_x >= 0, "Start x should be >= 0");
+        assert!(map.start_y >= 0, "Start y should be >= 0");
+        assert!((map.start_x as usize) < map.width, "Start x should be < width");
+        assert!((map.start_y as usize) < map.height, "Start y should be < height");
+    }
+
+    #[test]
+    fn test_start_position_various_seeds() {
+        // Test that start position is always valid for various seeds
+        for seed in [1, 42, 12345, 99999, 1000000] {
+            let mut generator = MapGenerator::new(seed);
+            let map = generator.generate(100, 50);
+
+            let start_tile = map.tiles[map.start_y as usize][map.start_x as usize];
+            assert!(
+                start_tile.is_passable(),
+                "Start position must be passable for seed {}",
+                seed
+            );
+        }
+    }
+
+    // ==================== MapData Serialization Tests ====================
+
+    #[test]
+    fn test_map_data_serialization() {
+        let mut generator = MapGenerator::new(12345);
+        let map = generator.generate(50, 30);
+
+        let json = serde_json::to_string(&map).unwrap();
+        let parsed: MapData = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(map.width, parsed.width);
+        assert_eq!(map.height, parsed.height);
+        assert_eq!(map.start_x, parsed.start_x);
+        assert_eq!(map.start_y, parsed.start_y);
+        assert_eq!(map.tiles, parsed.tiles);
+    }
+
+    #[test]
+    fn test_map_data_json_structure() {
+        let mut generator = MapGenerator::new(12345);
+        let map = generator.generate(10, 5);
+
+        let json = serde_json::to_string(&map).unwrap();
+
+        // Verify JSON contains expected fields
+        assert!(json.contains("\"tiles\""), "JSON should contain tiles field");
+        assert!(json.contains("\"width\""), "JSON should contain width field");
+        assert!(json.contains("\"height\""), "JSON should contain height field");
+        assert!(json.contains("\"start_x\""), "JSON should contain start_x field");
+        assert!(json.contains("\"start_y\""), "JSON should contain start_y field");
+    }
+
+    // ==================== MapQuery Tests ====================
+
+    #[test]
+    fn test_default_width() {
+        assert_eq!(default_width(), 500);
+    }
+
+    #[test]
+    fn test_default_height() {
+        assert_eq!(default_height(), 200);
+    }
+
+    #[test]
+    fn test_map_query_deserialization_defaults() {
+        let json = "{}";
+        let query: MapQuery = serde_json::from_str(json).unwrap();
+
+        assert_eq!(query.width, 500, "Default width should be 500");
+        assert_eq!(query.height, 200, "Default height should be 200");
+        assert!(query.seed.is_none(), "Default seed should be None");
+    }
+
+    #[test]
+    fn test_map_query_deserialization_custom() {
+        let json = r#"{"width": 100, "height": 50, "seed": 42}"#;
+        let query: MapQuery = serde_json::from_str(json).unwrap();
+
+        assert_eq!(query.width, 100);
+        assert_eq!(query.height, 50);
+        assert_eq!(query.seed, Some(42));
+    }
+
+    #[test]
+    fn test_map_query_partial_override() {
+        let json = r#"{"width": 300}"#;
+        let query: MapQuery = serde_json::from_str(json).unwrap();
+
+        assert_eq!(query.width, 300, "Width should be overridden");
+        assert_eq!(query.height, 200, "Height should use default");
+        assert!(query.seed.is_none(), "Seed should use default");
+    }
+
+    // ==================== HTTP Endpoint Tests ====================
+
+    fn create_app() -> Router {
+        Router::new()
+            .route("/", get(health))
+            .route("/health", get(health))
+            .route("/map", get(get_map))
+    }
+
+    #[tokio::test]
+    async fn test_health_endpoint() {
+        let app = create_app();
+
+        let response = app
+            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[..], b"OK");
+    }
+
+    #[tokio::test]
+    async fn test_root_endpoint() {
+        let app = create_app();
+
+        let response = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[..], b"OK");
+    }
+
+    #[tokio::test]
+    async fn test_map_endpoint_default_params() {
+        let app = create_app();
+
+        let response = app
+            .oneshot(Request::builder().uri("/map").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let map: MapData = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(map.width, 500, "Default width should be 500");
+        assert_eq!(map.height, 200, "Default height should be 200");
+    }
+
+    #[tokio::test]
+    async fn test_map_endpoint_custom_dimensions() {
+        let app = create_app();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/map?width=100&height=50")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let map: MapData = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(map.width, 100);
+        assert_eq!(map.height, 50);
+    }
+
+    #[tokio::test]
+    async fn test_map_endpoint_with_seed() {
+        let app = create_app();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/map?width=50&height=30&seed=42")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let map: MapData = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(map.width, 50);
+        assert_eq!(map.height, 30);
+
+        // Verify determinism - same seed should produce same start position
+        let mut generator = MapGenerator::new(42);
+        let expected = generator.generate(50, 30);
+        assert_eq!(map.start_x, expected.start_x);
+        assert_eq!(map.start_y, expected.start_y);
+    }
+
+    #[tokio::test]
+    async fn test_map_endpoint_deterministic() {
+        // Two requests with same seed should return identical maps
+        let app1 = create_app();
+        let app2 = create_app();
+
+        let response1 = app1
+            .oneshot(
+                Request::builder()
+                    .uri("/map?width=50&height=30&seed=12345")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let response2 = app2
+            .oneshot(
+                Request::builder()
+                    .uri("/map?width=50&height=30&seed=12345")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body1 = response1.into_body().collect().await.unwrap().to_bytes();
+        let body2 = response2.into_body().collect().await.unwrap().to_bytes();
+
+        let map1: MapData = serde_json::from_slice(&body1).unwrap();
+        let map2: MapData = serde_json::from_slice(&body2).unwrap();
+
+        assert_eq!(map1.tiles, map2.tiles, "Same seed should produce same map");
+    }
+
+    #[tokio::test]
+    async fn test_map_endpoint_returns_json() {
+        let app = create_app();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/map?width=20&height=10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .map(|v| v.to_str().unwrap_or(""));
+
+        assert!(
+            content_type.map(|ct| ct.contains("application/json")).unwrap_or(false),
+            "Response should be JSON"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_404_for_unknown_route() {
+        let app = create_app();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/nonexistent")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }

@@ -1,9 +1,82 @@
 use libnotcurses_sys::*;
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// Server URL for map fetching
 const SERVER_URL: &str = "http://localhost:3000";
+
+/// User configuration
+#[derive(Serialize, Deserialize, Clone)]
+struct Config {
+    /// Enable background visual effects (stars, nebula animations, etc.)
+    effects_enabled: bool,
+    /// Server URL override
+    server_url: Option<String>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            effects_enabled: false,  // Off by default
+            server_url: None,
+        }
+    }
+}
+
+impl Config {
+    /// Get the config file path
+    fn config_path() -> Option<PathBuf> {
+        dirs::config_dir().map(|mut p| {
+            p.push("exospace");
+            p.push("config.json");
+            p
+        })
+    }
+
+    /// Load config from file, or return default if not found
+    fn load() -> Self {
+        let Some(path) = Self::config_path() else {
+            return Self::default();
+        };
+
+        match fs::read_to_string(&path) {
+            Ok(contents) => {
+                serde_json::from_str(&contents).unwrap_or_else(|e| {
+                    eprintln!("Warning: Failed to parse config: {}", e);
+                    Self::default()
+                })
+            }
+            Err(_) => Self::default(),
+        }
+    }
+
+    /// Save config to file
+    fn save(&self) -> Result<(), String> {
+        let path = Self::config_path()
+            .ok_or_else(|| "Could not determine config directory".to_string())?;
+
+        // Create parent directories if needed
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create config directory: {}", e))?;
+        }
+
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| format!("Failed to serialize config: {}", e))?;
+
+        fs::write(&path, json)
+            .map_err(|e| format!("Failed to write config file: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Get the server URL (config override or default)
+    fn server_url(&self) -> &str {
+        self.server_url.as_deref().unwrap_or(SERVER_URL)
+    }
+}
 
 /// Tile types in the map
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
@@ -107,8 +180,8 @@ struct Map {
 
 impl Map {
     /// Fetch map from the server
-    fn fetch_from_server() -> Result<Self, String> {
-        let url = format!("{}/map", SERVER_URL);
+    fn fetch_from_server(config: &Config) -> Result<Self, String> {
+        let url = format!("{}/map", config.server_url());
 
         let response = reqwest::blocking::get(&url)
             .map_err(|e| format!("Failed to connect to server: {}", e))?;
@@ -264,8 +337,8 @@ impl Map {
     }
 
     /// Get map from server, falling back to local generation
-    fn new() -> Self {
-        match Self::fetch_from_server() {
+    fn new(config: &Config) -> Self {
+        match Self::fetch_from_server(config) {
             Ok(map) => {
                 eprintln!("Connected to server, map loaded");
                 map
@@ -325,12 +398,12 @@ struct Renderer {
 }
 
 impl Renderer {
-    fn new() -> Self {
+    fn new(effects_enabled: bool) -> Self {
         Renderer {
             frame: 0,
             star_chars: ['.', '+', '*', 'o'],
             asteroid_chars: ['o', 'O', '0', '@'],
-            effects_enabled: true,
+            effects_enabled,
         }
     }
 
@@ -643,10 +716,13 @@ impl Player {
 fn main() -> NcResult<()> {
     let nc = unsafe { Nc::new()? };
 
-    let map = Map::new();
+    // Load user configuration
+    let mut config = Config::load();
+
+    let map = Map::new(&config);
     let start = map.find_start_position();
     let mut player = Player::new(start.0, start.1);
-    let mut renderer = Renderer::new();
+    let mut renderer = Renderer::new(config.effects_enabled);
 
     let stdplane = unsafe { nc.stdplane() };
     let (mut term_height, mut term_width) = stdplane.dim_yx();
@@ -669,6 +745,8 @@ fn main() -> NcResult<()> {
                     }
                     NcReceived::Char('b') | NcReceived::Char('B') => {
                         renderer.toggle_effects();
+                        config.effects_enabled = renderer.effects_enabled;
+                        let _ = config.save(); // Save preference (ignore errors)
                     }
                     NcReceived::Key(key) => {
                         let evtype = NcInputType::from(input.evtype);
@@ -978,15 +1056,22 @@ mod tests {
     // ==================== Renderer Tests ====================
 
     #[test]
-    fn test_renderer_new() {
-        let renderer = Renderer::new();
+    fn test_renderer_new_with_effects_enabled() {
+        let renderer = Renderer::new(true);
         assert_eq!(renderer.frame, 0);
         assert!(renderer.effects_enabled);
     }
 
     #[test]
+    fn test_renderer_new_with_effects_disabled() {
+        let renderer = Renderer::new(false);
+        assert_eq!(renderer.frame, 0);
+        assert!(!renderer.effects_enabled);
+    }
+
+    #[test]
     fn test_renderer_toggle_effects() {
-        let mut renderer = Renderer::new();
+        let mut renderer = Renderer::new(true);
         assert!(renderer.effects_enabled);
 
         renderer.toggle_effects();
@@ -998,7 +1083,7 @@ mod tests {
 
     #[test]
     fn test_renderer_tick() {
-        let mut renderer = Renderer::new();
+        let mut renderer = Renderer::new(true);
         assert_eq!(renderer.frame, 0);
 
         renderer.tick();
@@ -1010,8 +1095,7 @@ mod tests {
 
     #[test]
     fn test_renderer_effects_disabled_returns_simple_tiles() {
-        let mut renderer = Renderer::new();
-        renderer.effects_enabled = false;
+        let renderer = Renderer::new(false);
 
         // With effects disabled, floor should return space with black
         let (ch, color) = renderer.render_tile(Some(Tile::Floor), 0, 0);
@@ -1025,7 +1109,7 @@ mod tests {
 
     #[test]
     fn test_renderer_render_tile_deterministic() {
-        let renderer = Renderer::new();
+        let renderer = Renderer::new(true);
 
         // Same position should give same result
         let result1 = renderer.render_tile(Some(Tile::Wall), 10, 20);
@@ -1084,5 +1168,54 @@ mod tests {
 
         state.up.held = true;
         assert!(state.any_movement());
+    }
+
+    // ==================== Config Tests ====================
+
+    #[test]
+    fn test_config_default() {
+        let config = Config::default();
+        assert!(!config.effects_enabled, "Effects should be disabled by default");
+        assert!(config.server_url.is_none(), "Server URL should be None by default");
+    }
+
+    #[test]
+    fn test_config_server_url_default() {
+        let config = Config::default();
+        assert_eq!(config.server_url(), SERVER_URL);
+    }
+
+    #[test]
+    fn test_config_server_url_override() {
+        let config = Config {
+            effects_enabled: false,
+            server_url: Some("http://custom:8080".to_string()),
+        };
+        assert_eq!(config.server_url(), "http://custom:8080");
+    }
+
+    #[test]
+    fn test_config_serialization() {
+        let config = Config {
+            effects_enabled: true,
+            server_url: Some("http://test:3000".to_string()),
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: Config = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.effects_enabled, config.effects_enabled);
+        assert_eq!(parsed.server_url, config.server_url);
+    }
+
+    #[test]
+    fn test_config_path_returns_some() {
+        // Config path should work on most systems
+        let path = Config::config_path();
+        // We can't guarantee it's Some on all systems, but if it is, check structure
+        if let Some(p) = path {
+            assert!(p.ends_with("config.json"));
+            assert!(p.to_string_lossy().contains("exospace"));
+        }
     }
 }
