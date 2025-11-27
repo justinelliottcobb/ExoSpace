@@ -1,6 +1,22 @@
-[package]
-name = "exospace"
+[workspace]
+members = [
+    "exospace-server",
+    "exospace-client-terminal",
+    "exospace-client-pixel",
+    "exospace-client-neural",
+]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
+
+[workspace.dependencies]
+libnotcurses-sys = "3.11"
+
+[package]
+name = "exospace"
+version.workspace = true
+edition.workspace = true
 
 [dependencies]

@@ -1,0 +1,6 @@
+[package]
+name = "exospace-client-pixel"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

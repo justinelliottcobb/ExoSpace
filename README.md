@@ -1,1 +1,1 @@
-# ExoSpace: A Subspace Clone in the Console
+# ExoSpace: A Subspace Clone in the Terminal
