@@ -389,6 +389,226 @@ impl Map {
     }
 }
 
+/// A single cell of the ship sprite
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ShipCell {
+    ch: char,
+    fg: u32,
+    bg: Option<u32>,
+}
+
+impl ShipCell {
+    fn new(ch: char, fg: u32) -> Self {
+        ShipCell { ch, fg, bg: None }
+    }
+
+    fn with_bg(ch: char, fg: u32, bg: u32) -> Self {
+        ShipCell { ch, fg, bg: Some(bg) }
+    }
+
+    fn empty() -> Self {
+        ShipCell { ch: ' ', fg: 0x000000, bg: None }
+    }
+}
+
+/// Ship sprite data - 3x3 grid for each direction
+/// Grid is [row][col] where (0,0) is top-left
+struct ShipSprite {
+    cells: [[ShipCell; 3]; 3],
+}
+
+impl ShipSprite {
+    /// Get ship sprite for a direction
+    fn for_direction(direction: Direction) -> Self {
+        let hull = 0x40C080;      // Cyan-green hull
+        let cockpit = 0x80FFFF;   // Bright cyan cockpit
+        let wing = 0x3090A0;      // Darker wing color
+        let accent = 0x60A0C0;    // Accent color
+
+        let e = ShipCell::empty();
+
+        match direction {
+            Direction::Up => ShipSprite {
+                cells: [
+                    [e,                              ShipCell::new('^', cockpit), e],
+                    [ShipCell::new('/', wing),       ShipCell::new('|', hull),    ShipCell::new('\\', wing)],
+                    [ShipCell::new('<', accent),     ShipCell::new('=', hull),    ShipCell::new('>', accent)],
+                ],
+            },
+            Direction::Down => ShipSprite {
+                cells: [
+                    [ShipCell::new('>', accent),     ShipCell::new('=', hull),    ShipCell::new('<', accent)],
+                    [ShipCell::new('\\', wing),      ShipCell::new('|', hull),    ShipCell::new('/', wing)],
+                    [e,                              ShipCell::new('v', cockpit), e],
+                ],
+            },
+            Direction::Left => ShipSprite {
+                cells: [
+                    [e,                              ShipCell::new('/', wing),    ShipCell::new('^', accent)],
+                    [ShipCell::new('<', cockpit),    ShipCell::new('-', hull),    ShipCell::new('=', hull)],
+                    [e,                              ShipCell::new('\\', wing),   ShipCell::new('v', accent)],
+                ],
+            },
+            Direction::Right => ShipSprite {
+                cells: [
+                    [ShipCell::new('v', accent),     ShipCell::new('\\', wing),   e],
+                    [ShipCell::new('=', hull),       ShipCell::new('-', hull),    ShipCell::new('>', cockpit)],
+                    [ShipCell::new('^', accent),     ShipCell::new('/', wing),    e],
+                ],
+            },
+            Direction::UpRight => ShipSprite {
+                cells: [
+                    [e,                              ShipCell::new('/', wing),    ShipCell::new('>', cockpit)],
+                    [ShipCell::new('/', wing),       ShipCell::new('/', hull),    ShipCell::new('/', wing)],
+                    [ShipCell::new('<', accent),     ShipCell::new('/', wing),    e],
+                ],
+            },
+            Direction::UpLeft => ShipSprite {
+                cells: [
+                    [ShipCell::new('<', cockpit),    ShipCell::new('\\', wing),   e],
+                    [ShipCell::new('\\', wing),      ShipCell::new('\\', hull),   ShipCell::new('\\', wing)],
+                    [e,                              ShipCell::new('\\', wing),   ShipCell::new('>', accent)],
+                ],
+            },
+            Direction::DownRight => ShipSprite {
+                cells: [
+                    [ShipCell::new('^', accent),     ShipCell::new('\\', wing),   e],
+                    [ShipCell::new('\\', wing),      ShipCell::new('\\', hull),   ShipCell::new('\\', wing)],
+                    [e,                              ShipCell::new('\\', wing),   ShipCell::new('v', cockpit)],
+                ],
+            },
+            Direction::DownLeft => ShipSprite {
+                cells: [
+                    [e,                              ShipCell::new('/', wing),    ShipCell::new('^', accent)],
+                    [ShipCell::new('/', wing),       ShipCell::new('/', hull),    ShipCell::new('/', wing)],
+                    [ShipCell::new('v', cockpit),    ShipCell::new('/', wing),    e],
+                ],
+            },
+        }
+    }
+}
+
+/// Exhaust animation - 3x4 grid behind the ship
+struct ExhaustSprite {
+    cells: [[ShipCell; 3]; 4],
+}
+
+impl ExhaustSprite {
+    /// Get exhaust sprite for a direction and animation frame
+    fn for_direction(direction: Direction, frame: u64) -> Self {
+        let phase = (frame / 4) % 4; // Exhaust animation cycles every 4 frames
+
+        // Exhaust colors that cycle - bright near ship, fading further out
+        let colors = [0xFF6600, 0xFFAA00, 0xFFFF00, 0xFF8800]; // Orange to yellow
+        let mid_colors = [0xCC5500, 0xCC8800, 0xCCCC00, 0xCC6600]; // Mid brightness
+        let dim_colors = [0x803300, 0x805500, 0x808000, 0x804400]; // Dimmer
+        let faint_colors = [0x401800, 0x402800, 0x404000, 0x402200]; // Faintest trail
+
+        let bright = colors[phase as usize];
+        let mid = mid_colors[phase as usize];
+        let dim = dim_colors[phase as usize];
+        let faint = faint_colors[phase as usize];
+
+        let e = ShipCell::empty();
+
+        // Exhaust characters that flicker
+        let exhaust_chars = ['*', '+', 'o', '.'];
+        let ch1 = exhaust_chars[phase as usize];
+        let ch2 = exhaust_chars[((phase + 2) % 4) as usize];
+        let ch3 = exhaust_chars[((phase + 1) % 4) as usize];
+        let ch4 = exhaust_chars[((phase + 3) % 4) as usize];
+
+        match direction {
+            Direction::Up => ExhaustSprite {
+                // Exhaust below the ship (trailing down)
+                cells: [
+                    [ShipCell::new(ch2, mid),    ShipCell::new('|', bright), ShipCell::new(ch2, mid)],
+                    [ShipCell::new(ch1, dim),    ShipCell::new(ch1, mid),    ShipCell::new(ch1, dim)],
+                    [e,                          ShipCell::new(ch3, dim),    e],
+                    [e,                          ShipCell::new(ch4, faint),  e],
+                ],
+            },
+            Direction::Down => ExhaustSprite {
+                // Exhaust above the ship (trailing up)
+                cells: [
+                    [e,                          ShipCell::new(ch4, faint),  e],
+                    [e,                          ShipCell::new(ch3, dim),    e],
+                    [ShipCell::new(ch1, dim),    ShipCell::new(ch1, mid),    ShipCell::new(ch1, dim)],
+                    [ShipCell::new(ch2, mid),    ShipCell::new('|', bright), ShipCell::new(ch2, mid)],
+                ],
+            },
+            Direction::Left => ExhaustSprite {
+                // Exhaust to the right of ship (trailing right) - 4 cols conceptually but we use rows
+                cells: [
+                    [ShipCell::new(ch2, mid),    ShipCell::new('-', bright), ShipCell::new(ch1, dim), ],
+                    [ShipCell::new(ch2, mid),    ShipCell::new('-', bright), ShipCell::new(ch1, dim), ],
+                    [ShipCell::new(ch3, dim),    ShipCell::new(ch3, mid),    ShipCell::new(ch4, faint)],
+                    [ShipCell::new(ch4, faint),  e,                          e],
+                ],
+            },
+            Direction::Right => ExhaustSprite {
+                // Exhaust to the left of ship (trailing left)
+                cells: [
+                    [ShipCell::new(ch1, dim),    ShipCell::new('-', bright), ShipCell::new(ch2, mid)],
+                    [ShipCell::new(ch1, dim),    ShipCell::new('-', bright), ShipCell::new(ch2, mid)],
+                    [ShipCell::new(ch4, faint),  ShipCell::new(ch3, mid),    ShipCell::new(ch3, dim)],
+                    [e,                          e,                          ShipCell::new(ch4, faint)],
+                ],
+            },
+            Direction::UpRight => ExhaustSprite {
+                // Diagonal exhaust (down-left)
+                cells: [
+                    [ShipCell::new(ch1, mid),    ShipCell::new(ch2, dim),    e],
+                    [ShipCell::new('\\', bright), ShipCell::new(ch1, mid),   e],
+                    [ShipCell::new(ch3, dim),    ShipCell::new('\\', dim),   e],
+                    [ShipCell::new(ch4, faint),  ShipCell::new(ch3, faint),  e],
+                ],
+            },
+            Direction::UpLeft => ExhaustSprite {
+                // Diagonal exhaust (down-right)
+                cells: [
+                    [e,                          ShipCell::new(ch2, dim),    ShipCell::new(ch1, mid)],
+                    [e,                          ShipCell::new(ch1, mid),    ShipCell::new('/', bright)],
+                    [e,                          ShipCell::new('/', dim),    ShipCell::new(ch3, dim)],
+                    [e,                          ShipCell::new(ch3, faint),  ShipCell::new(ch4, faint)],
+                ],
+            },
+            Direction::DownRight => ExhaustSprite {
+                // Diagonal exhaust (up-left)
+                cells: [
+                    [ShipCell::new(ch4, faint),  ShipCell::new(ch3, faint),  e],
+                    [ShipCell::new(ch3, dim),    ShipCell::new('/', dim),    e],
+                    [ShipCell::new('/', bright), ShipCell::new(ch1, mid),    e],
+                    [ShipCell::new(ch1, mid),    ShipCell::new(ch2, dim),    e],
+                ],
+            },
+            Direction::DownLeft => ExhaustSprite {
+                // Diagonal exhaust (up-right)
+                cells: [
+                    [e,                          ShipCell::new(ch3, faint),  ShipCell::new(ch4, faint)],
+                    [e,                          ShipCell::new('\\', dim),   ShipCell::new(ch3, dim)],
+                    [e,                          ShipCell::new(ch1, mid),    ShipCell::new('\\', bright)],
+                    [e,                          ShipCell::new(ch2, dim),    ShipCell::new(ch1, mid)],
+                ],
+            },
+        }
+    }
+
+    /// Get the offset for the exhaust relative to ship center
+    fn offset_for_direction(direction: Direction) -> (i32, i32) {
+        match direction {
+            Direction::Up => (-1, 2),      // Below ship, centered
+            Direction::Down => (-1, -5),   // Above ship, centered
+            Direction::Left => (2, -1),    // Right of ship
+            Direction::Right => (-5, -1),  // Left of ship (extended)
+            Direction::UpRight => (-3, 1), // Down-left of ship
+            Direction::UpLeft => (1, 1),   // Down-right of ship
+            Direction::DownRight => (-3, -4), // Up-left of ship
+            Direction::DownLeft => (1, -4),   // Up-right of ship
+        }
+    }
+}
+
 /// Visual renderer with animation state
 struct Renderer {
     frame: u64,
@@ -539,25 +759,45 @@ impl Renderer {
         }
     }
 
-    /// Render the player with a glow effect
-    fn render_player(&self, direction: Direction) -> (char, u32, Option<u32>) {
-        // Pulsing glow - vary green channel from 0xAA to 0xFF
-        let pulse = (self.frame % 30) as u32;
-        let green = if pulse < 15 {
-            0xAA + (pulse * 5)  // 0xAA (170) to ~0xF5 (245)
-        } else {
-            0xF5 - ((pulse - 15) * 5)  // back down to 0xAA
-        };
-        let glow_intensity = green << 8;  // Put in green channel
+    /// Check if a screen offset from center is part of the ship or exhaust
+    /// Returns Some(ShipCell) if it should be rendered as ship/exhaust, None otherwise
+    /// offset_x/y are relative to player center (0,0 = center of ship)
+    fn get_ship_cell(&self, direction: Direction, offset_x: i32, offset_y: i32) -> Option<ShipCell> {
+        // Ship is centered at (0,0), so ship cells are at offsets -1..=1 for both x and y
+        // Ship grid: row 0 = y offset -1, row 1 = y offset 0, row 2 = y offset 1
+        //            col 0 = x offset -1, col 1 = x offset 0, col 2 = x offset 1
 
-        // Engine glow behind player (background color)
-        let engine_glow = match direction {
-            Direction::Up | Direction::Down | Direction::Left | Direction::Right => Some(0x002200),
-            _ => Some(0x001800), // Dimmer for diagonals
-        };
+        // Check if in ship bounds (3x3 centered on player)
+        if offset_x >= -1 && offset_x <= 1 && offset_y >= -1 && offset_y <= 1 {
+            let ship = ShipSprite::for_direction(direction);
+            let row = (offset_y + 1) as usize;
+            let col = (offset_x + 1) as usize;
+            let cell = ship.cells[row][col];
 
-        (direction.to_char(), glow_intensity, engine_glow)
+            // Return cell if it's not empty
+            if cell.ch != ' ' {
+                return Some(cell);
+            }
+        }
+
+        // Check if in exhaust bounds
+        let (exhaust_offset_x, exhaust_offset_y) = ExhaustSprite::offset_for_direction(direction);
+        let exhaust = ExhaustSprite::for_direction(direction, self.frame);
+
+        // Exhaust is 3x4 grid starting at the offset position
+        let rel_x = offset_x - exhaust_offset_x;
+        let rel_y = offset_y - exhaust_offset_y;
+
+        if rel_x >= 0 && rel_x < 3 && rel_y >= 0 && rel_y < 4 {
+            let cell = exhaust.cells[rel_y as usize][rel_x as usize];
+            if cell.ch != ' ' {
+                return Some(cell);
+            }
+        }
+
+        None
     }
+
 }
 
 #[derive(Clone)]
@@ -713,6 +953,245 @@ impl Player {
     }
 }
 
+/// A message in the chat history
+#[derive(Clone)]
+struct ChatMessage {
+    text: String,
+    color: u32,
+}
+
+impl ChatMessage {
+    fn new(text: String, color: u32) -> Self {
+        ChatMessage {
+            text,
+            color,
+        }
+    }
+
+    fn system(text: &str) -> Self {
+        ChatMessage::new(text.to_string(), 0xFFFF00) // Yellow for system messages
+    }
+
+    fn user(text: &str) -> Self {
+        ChatMessage::new(text.to_string(), 0x00FF00) // Green for user input
+    }
+
+    fn error(text: &str) -> Self {
+        ChatMessage::new(text.to_string(), 0xFF4444) // Red for errors
+    }
+}
+
+/// Chat/command window state
+struct ChatWindow {
+    /// Whether chat input is active
+    active: bool,
+    /// Current input buffer
+    input: String,
+    /// Cursor position in input
+    cursor: usize,
+    /// Message history (newest last)
+    messages: Vec<ChatMessage>,
+    /// Maximum messages to keep
+    max_messages: usize,
+    /// Number of visible message lines
+    visible_lines: usize,
+}
+
+impl Default for ChatWindow {
+    fn default() -> Self {
+        ChatWindow {
+            active: false,
+            input: String::new(),
+            cursor: 0,
+            messages: Vec::new(),
+            max_messages: 100,
+            visible_lines: 3,
+        }
+    }
+}
+
+impl ChatWindow {
+    fn new() -> Self {
+        let mut chat = ChatWindow::default();
+        chat.add_message(ChatMessage::system("Welcome to Exospace! Press Enter to chat, / for commands."));
+        chat
+    }
+
+    /// Toggle chat input mode
+    fn toggle(&mut self) {
+        self.active = !self.active;
+        if !self.active {
+            self.input.clear();
+            self.cursor = 0;
+        }
+    }
+
+    /// Open chat (if not already open)
+    fn open(&mut self) {
+        self.active = true;
+    }
+
+    /// Close chat without submitting
+    fn close(&mut self) {
+        self.active = false;
+        self.input.clear();
+        self.cursor = 0;
+    }
+
+    /// Add a character at cursor position
+    fn insert_char(&mut self, ch: char) {
+        self.input.insert(self.cursor, ch);
+        self.cursor += ch.len_utf8();
+    }
+
+    /// Delete character before cursor (backspace)
+    fn backspace(&mut self) {
+        if self.cursor > 0 {
+            // Find the previous character boundary
+            let prev = self.input[..self.cursor]
+                .char_indices()
+                .last()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            self.input.remove(prev);
+            self.cursor = prev;
+        }
+    }
+
+    /// Delete character at cursor (delete key)
+    fn delete(&mut self) {
+        if self.cursor < self.input.len() {
+            self.input.remove(self.cursor);
+        }
+    }
+
+    /// Move cursor left
+    fn cursor_left(&mut self) {
+        if self.cursor > 0 {
+            self.cursor = self.input[..self.cursor]
+                .char_indices()
+                .last()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+        }
+    }
+
+    /// Move cursor right
+    fn cursor_right(&mut self) {
+        if self.cursor < self.input.len() {
+            self.cursor = self.input[self.cursor..]
+                .char_indices()
+                .nth(1)
+                .map(|(i, _)| self.cursor + i)
+                .unwrap_or(self.input.len());
+        }
+    }
+
+    /// Move cursor to start
+    fn cursor_home(&mut self) {
+        self.cursor = 0;
+    }
+
+    /// Move cursor to end
+    fn cursor_end(&mut self) {
+        self.cursor = self.input.len();
+    }
+
+    /// Submit the current input and return it
+    fn submit(&mut self) -> Option<String> {
+        if self.input.is_empty() {
+            self.close();
+            return None;
+        }
+
+        let text = self.input.clone();
+        self.add_message(ChatMessage::user(&text));
+        self.input.clear();
+        self.cursor = 0;
+        self.active = false;
+
+        Some(text)
+    }
+
+    /// Add a message to history
+    fn add_message(&mut self, message: ChatMessage) {
+        self.messages.push(message);
+        if self.messages.len() > self.max_messages {
+            self.messages.remove(0);
+        }
+    }
+
+    /// Process a command or chat message
+    fn process_input(&mut self, text: &str) -> Option<ChatCommand> {
+        let text = text.trim();
+        if text.is_empty() {
+            return None;
+        }
+
+        // Check if it's a command (starts with /)
+        if let Some(cmd) = text.strip_prefix('/') {
+            let parts: Vec<&str> = cmd.splitn(2, ' ').collect();
+            let command = parts[0].to_lowercase();
+            let args = parts.get(1).map(|s| s.to_string());
+
+            match command.as_str() {
+                "help" | "?" => {
+                    self.add_message(ChatMessage::system("Commands:"));
+                    self.add_message(ChatMessage::system("  /help - Show this help"));
+                    self.add_message(ChatMessage::system("  /pos - Show current position"));
+                    self.add_message(ChatMessage::system("  /goto X Y - Teleport to position"));
+                    self.add_message(ChatMessage::system("  /fx - Toggle effects"));
+                    self.add_message(ChatMessage::system("  /quit - Exit game"));
+                    None
+                }
+                "quit" | "exit" | "q" => Some(ChatCommand::Quit),
+                "pos" | "position" | "where" => Some(ChatCommand::ShowPosition),
+                "goto" | "tp" | "teleport" => {
+                    if let Some(args) = args {
+                        let coords: Vec<&str> = args.split_whitespace().collect();
+                        if coords.len() >= 2 {
+                            if let (Ok(x), Ok(y)) = (coords[0].parse::<i32>(), coords[1].parse::<i32>()) {
+                                return Some(ChatCommand::Teleport(x, y));
+                            }
+                        }
+                    }
+                    self.add_message(ChatMessage::error("Usage: /goto X Y"));
+                    None
+                }
+                "fx" | "effects" => Some(ChatCommand::ToggleEffects),
+                _ => {
+                    self.add_message(ChatMessage::error(&format!("Unknown command: /{}", command)));
+                    None
+                }
+            }
+        } else {
+            // Regular chat message (for now just echo it)
+            self.add_message(ChatMessage::new(format!("You: {}", text), 0xAAAAAA));
+            None
+        }
+    }
+
+    /// Get the visible messages (most recent)
+    fn visible_messages(&self) -> impl Iterator<Item = &ChatMessage> {
+        let start = self.messages.len().saturating_sub(self.visible_lines);
+        self.messages[start..].iter()
+    }
+
+    /// Get cursor position in display characters (for rendering)
+    fn display_cursor_pos(&self) -> usize {
+        self.input[..self.cursor].chars().count()
+    }
+}
+
+/// Commands that can be executed from chat
+#[derive(Debug, Clone, PartialEq)]
+enum ChatCommand {
+    Quit,
+    ShowPosition,
+    Teleport(i32, i32),
+    ToggleEffects,
+}
+
 fn main() -> NcResult<()> {
     let nc = unsafe { Nc::new()? };
 
@@ -723,6 +1202,7 @@ fn main() -> NcResult<()> {
     let start = map.find_start_position();
     let mut player = Player::new(start.0, start.1);
     let mut renderer = Renderer::new(config.effects_enabled);
+    let mut chat = ChatWindow::new();
 
     let stdplane = unsafe { nc.stdplane() };
     let (mut term_height, mut term_width) = stdplane.dim_yx();
@@ -731,38 +1211,133 @@ fn main() -> NcResult<()> {
     let mut last_move_time = Instant::now();
     let move_delay = Duration::from_millis(33);
 
+    // Chat area takes up bottom lines: messages + input line + status bar
+    let chat_height: u32 = 5; // 3 message lines + 1 input line + 1 status bar
+
     loop {
         let mut quit = false;
         let mut input = NcInput::new_empty();
 
         loop {
             match nc.get_nblock(Some(&mut input)) {
-                Ok(received) => match received {
-                    NcReceived::NoInput => break,
-                    NcReceived::Char('q') | NcReceived::Char('Q') => {
-                        quit = true;
-                        break;
-                    }
-                    NcReceived::Char('b') | NcReceived::Char('B') => {
-                        renderer.toggle_effects();
-                        config.effects_enabled = renderer.effects_enabled;
-                        let _ = config.save(); // Save preference (ignore errors)
-                    }
-                    NcReceived::Key(key) => {
-                        let evtype = NcInputType::from(input.evtype);
-                        match key {
-                            NcKey::Up | NcKey::Down | NcKey::Left | NcKey::Right => {
-                                input_state.update_key(key, evtype);
+                Ok(received) => {
+                    if chat.active {
+                        // Chat mode input handling
+                        match received {
+                            NcReceived::NoInput => break,
+                            NcReceived::Char(ch) => {
+                                if ch.is_ascii_graphic() || ch == ' ' {
+                                    chat.insert_char(ch);
+                                }
                             }
-                            NcKey::Resize => {
-                                let dims = stdplane.dim_yx();
-                                term_height = dims.0;
-                                term_width = dims.1;
+                            NcReceived::Key(key) => {
+                                match key {
+                                    NcKey::Enter => {
+                                        if let Some(text) = chat.submit() {
+                                            if let Some(cmd) = chat.process_input(&text) {
+                                                match cmd {
+                                                    ChatCommand::Quit => {
+                                                        quit = true;
+                                                        break;
+                                                    }
+                                                    ChatCommand::ShowPosition => {
+                                                        chat.add_message(ChatMessage::system(
+                                                            &format!("Position: ({}, {})", player.x, player.y)
+                                                        ));
+                                                    }
+                                                    ChatCommand::Teleport(x, y) => {
+                                                        if map.is_passable(x, y) {
+                                                            player.x = x;
+                                                            player.y = y;
+                                                            chat.add_message(ChatMessage::system(
+                                                                &format!("Teleported to ({}, {})", x, y)
+                                                            ));
+                                                        } else {
+                                                            chat.add_message(ChatMessage::error(
+                                                                &format!("Cannot teleport to ({}, {}) - not passable", x, y)
+                                                            ));
+                                                        }
+                                                    }
+                                                    ChatCommand::ToggleEffects => {
+                                                        renderer.toggle_effects();
+                                                        config.effects_enabled = renderer.effects_enabled;
+                                                        let _ = config.save();
+                                                        chat.add_message(ChatMessage::system(
+                                                            &format!("Effects: {}", if renderer.effects_enabled { "ON" } else { "OFF" })
+                                                        ));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    NcKey::Esc => {
+                                        chat.close();
+                                    }
+                                    NcKey::Backspace => {
+                                        chat.backspace();
+                                    }
+                                    NcKey::Del => {
+                                        chat.delete();
+                                    }
+                                    NcKey::Left => {
+                                        chat.cursor_left();
+                                    }
+                                    NcKey::Right => {
+                                        chat.cursor_right();
+                                    }
+                                    NcKey::Home => {
+                                        chat.cursor_home();
+                                    }
+                                    NcKey::End => {
+                                        chat.cursor_end();
+                                    }
+                                    NcKey::Resize => {
+                                        let dims = stdplane.dim_yx();
+                                        term_height = dims.0;
+                                        term_width = dims.1;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    } else {
+                        // Game mode input handling
+                        match received {
+                            NcReceived::NoInput => break,
+                            NcReceived::Char('q') | NcReceived::Char('Q') => {
+                                quit = true;
+                                break;
+                            }
+                            NcReceived::Char('b') | NcReceived::Char('B') => {
+                                renderer.toggle_effects();
+                                config.effects_enabled = renderer.effects_enabled;
+                                let _ = config.save();
+                            }
+                            NcReceived::Char('/') => {
+                                // Open chat with / pre-filled for command
+                                chat.open();
+                                chat.insert_char('/');
+                            }
+                            NcReceived::Key(key) => {
+                                let evtype = NcInputType::from(input.evtype);
+                                match key {
+                                    NcKey::Enter => {
+                                        chat.open();
+                                    }
+                                    NcKey::Up | NcKey::Down | NcKey::Left | NcKey::Right => {
+                                        input_state.update_key(key, evtype);
+                                    }
+                                    NcKey::Resize => {
+                                        let dims = stdplane.dim_yx();
+                                        term_height = dims.0;
+                                        term_width = dims.1;
+                                    }
+                                    _ => {}
+                                }
                             }
                             _ => {}
                         }
                     }
-                    _ => {}
                 },
                 Err(_) => break,
             }
@@ -772,12 +1347,15 @@ fn main() -> NcResult<()> {
             break;
         }
 
-        input_state.timeout_stale_keys();
+        // Only process movement when not in chat mode
+        if !chat.active {
+            input_state.timeout_stale_keys();
 
-        if input_state.any_movement() && last_move_time.elapsed() >= move_delay {
-            let (dx, dy) = input_state.movement_delta();
-            player.try_move(dx, dy, &map);
-            last_move_time = Instant::now();
+            if input_state.any_movement() && last_move_time.elapsed() >= move_delay {
+                let (dx, dy) = input_state.movement_delta();
+                player.try_move(dx, dy, &map);
+                last_move_time = Instant::now();
+            }
         }
 
         // Update animation frame
@@ -786,24 +1364,33 @@ fn main() -> NcResult<()> {
         // Render
         stdplane.erase();
 
+        let game_height = term_height.saturating_sub(chat_height);
         let center_screen_x = term_width / 2;
-        let center_screen_y = (term_height.saturating_sub(1)) / 2;
+        let center_screen_y = game_height / 2;
 
-        for screen_y in 0..term_height.saturating_sub(1) {
+        // Render game area
+        for screen_y in 0..game_height {
             for screen_x in 0..term_width {
                 let map_x = player.x + (screen_x as i32 - center_screen_x as i32);
                 let map_y = player.y + (screen_y as i32 - center_screen_y as i32);
 
-                if screen_x == center_screen_x && screen_y == center_screen_y {
-                    let (ch, fg, bg) = renderer.render_player(player.direction);
-                    if let Some(bg_color) = bg {
+                // Calculate offset from player center for ship rendering
+                let offset_x = screen_x as i32 - center_screen_x as i32;
+                let offset_y = screen_y as i32 - center_screen_y as i32;
+
+                // Check if this position is part of the ship or exhaust
+                if let Some(ship_cell) = renderer.get_ship_cell(player.direction, offset_x, offset_y) {
+                    if let Some(bg_color) = ship_cell.bg {
                         stdplane.set_bg_rgb(bg_color);
+                    } else {
+                        stdplane.set_bg_default();
                     }
-                    stdplane.set_fg_rgb(fg);
-                    let s: String = ch.into();
+                    stdplane.set_fg_rgb(ship_cell.fg);
+                    let s: String = ship_cell.ch.into();
                     stdplane.putstr_yx(Some(screen_y), Some(screen_x), &s)?;
                     stdplane.set_bg_default();
                 } else {
+                    // Render map tile
                     let tile = map.get(map_x, map_y);
                     let (ch, fg) = renderer.render_tile(tile, map_x, map_y);
 
@@ -815,8 +1402,50 @@ fn main() -> NcResult<()> {
             }
         }
 
+        // Render chat messages
+        stdplane.set_bg_rgb(0x000010);
+        let msg_start_y = game_height;
+        for (i, msg) in chat.visible_messages().enumerate() {
+            stdplane.set_fg_rgb(msg.color);
+            let truncated: String = msg.text.chars().take(term_width as usize).collect();
+            let padded = format!("{:<width$}", truncated, width = term_width as usize);
+            stdplane.putstr_yx(Some(msg_start_y + i as u32), Some(0), &padded)?;
+        }
+        // Fill remaining message lines if fewer messages
+        let msg_count = chat.visible_messages().count();
+        for i in msg_count..chat.visible_lines {
+            let blank = " ".repeat(term_width as usize);
+            stdplane.set_fg_rgb(0x404040);
+            stdplane.putstr_yx(Some(msg_start_y + i as u32), Some(0), &blank)?;
+        }
+
+        // Render chat input line
+        let input_y = term_height - 2;
+        stdplane.set_bg_rgb(0x000020);
+        if chat.active {
+            stdplane.set_fg_rgb(0x00FFFF);
+            let prompt = "> ";
+            let input_display: String = chat.input.chars().take(term_width as usize - 2).collect();
+            let input_line = format!("{}{:<width$}", prompt, input_display, width = term_width as usize - 2);
+            stdplane.putstr_yx(Some(input_y), Some(0), &input_line)?;
+
+            // Show cursor (by inverting colors at cursor position)
+            let cursor_x = 2 + chat.display_cursor_pos();
+            if cursor_x < term_width as usize {
+                stdplane.set_fg_rgb(0x000020);
+                stdplane.set_bg_rgb(0x00FFFF);
+                let cursor_char = chat.input.chars().nth(chat.display_cursor_pos()).unwrap_or(' ');
+                let cursor_str: String = cursor_char.into();
+                stdplane.putstr_yx(Some(input_y), Some(cursor_x as u32), &cursor_str)?;
+            }
+        } else {
+            stdplane.set_fg_rgb(0x606060);
+            let hint = format!("{:<width$}", "Press Enter to chat, / for commands", width = term_width as usize);
+            stdplane.putstr_yx(Some(input_y), Some(0), &hint)?;
+        }
+        stdplane.set_bg_default();
+
         // Status bar
-        // Check what tile player is on
         let current_tile = map.get(player.x, player.y);
         let tile_name = match current_tile {
             Some(Tile::Floor) => "Space",
@@ -828,13 +1457,15 @@ fn main() -> NcResult<()> {
         stdplane.set_bg_rgb(0x000020);
 
         let effects_indicator = if renderer.effects_enabled { "FX:ON" } else { "FX:OFF" };
+        let mode_indicator = if chat.active { "[CHAT]" } else { "" };
         let status = format!(
-            " ({:>4},{:>4}) {:>2} | {} | {} | B:Effects Q:Quit ",
+            " ({:>4},{:>4}) {:>2} | {} | {} {} ",
             player.x,
             player.y,
             player.direction.name(),
             tile_name,
-            effects_indicator
+            effects_indicator,
+            mode_indicator
         );
         let padded_status = format!("{:<width$}", status, width = term_width as usize);
         stdplane.putstr_yx(Some(term_height - 1), Some(0), &padded_status)?;
@@ -1170,6 +1801,192 @@ mod tests {
         assert!(state.any_movement());
     }
 
+    // ==================== ShipCell Tests ====================
+
+    #[test]
+    fn test_ship_cell_new() {
+        let cell = ShipCell::new('^', 0xFF0000);
+        assert_eq!(cell.ch, '^');
+        assert_eq!(cell.fg, 0xFF0000);
+        assert!(cell.bg.is_none());
+    }
+
+    #[test]
+    fn test_ship_cell_with_bg() {
+        let cell = ShipCell::with_bg('X', 0xFF0000, 0x00FF00);
+        assert_eq!(cell.ch, 'X');
+        assert_eq!(cell.fg, 0xFF0000);
+        assert_eq!(cell.bg, Some(0x00FF00));
+    }
+
+    #[test]
+    fn test_ship_cell_empty() {
+        let cell = ShipCell::empty();
+        assert_eq!(cell.ch, ' ');
+        assert_eq!(cell.fg, 0x000000);
+        assert!(cell.bg.is_none());
+    }
+
+    // ==================== ShipSprite Tests ====================
+
+    #[test]
+    fn test_ship_sprite_all_directions() {
+        // Verify ship sprites exist for all 8 directions
+        let directions = [
+            Direction::Up, Direction::Down, Direction::Left, Direction::Right,
+            Direction::UpRight, Direction::UpLeft, Direction::DownRight, Direction::DownLeft,
+        ];
+
+        for dir in directions {
+            let sprite = ShipSprite::for_direction(dir);
+            // Ship should be 3x3
+            assert_eq!(sprite.cells.len(), 3);
+            for row in &sprite.cells {
+                assert_eq!(row.len(), 3);
+            }
+        }
+    }
+
+    #[test]
+    fn test_ship_sprite_center_not_empty() {
+        // Center of ship should never be empty for any direction
+        let directions = [
+            Direction::Up, Direction::Down, Direction::Left, Direction::Right,
+            Direction::UpRight, Direction::UpLeft, Direction::DownRight, Direction::DownLeft,
+        ];
+
+        for dir in directions {
+            let sprite = ShipSprite::for_direction(dir);
+            let center = sprite.cells[1][1];
+            assert_ne!(center.ch, ' ', "Center of ship should not be empty for {:?}", dir);
+        }
+    }
+
+    #[test]
+    fn test_ship_sprite_has_cockpit() {
+        // Each ship direction should have at least one cockpit-colored cell
+        let cockpit_color = 0x80FFFF;
+        let directions = [
+            Direction::Up, Direction::Down, Direction::Left, Direction::Right,
+            Direction::UpRight, Direction::UpLeft, Direction::DownRight, Direction::DownLeft,
+        ];
+
+        for dir in directions {
+            let sprite = ShipSprite::for_direction(dir);
+            let has_cockpit = sprite.cells.iter()
+                .flatten()
+                .any(|cell| cell.fg == cockpit_color);
+            assert!(has_cockpit, "Ship should have cockpit for {:?}", dir);
+        }
+    }
+
+    // ==================== ExhaustSprite Tests ====================
+
+    #[test]
+    fn test_exhaust_sprite_all_directions() {
+        // Verify exhaust sprites exist for all 8 directions
+        let directions = [
+            Direction::Up, Direction::Down, Direction::Left, Direction::Right,
+            Direction::UpRight, Direction::UpLeft, Direction::DownRight, Direction::DownLeft,
+        ];
+
+        for dir in directions {
+            let sprite = ExhaustSprite::for_direction(dir, 0);
+            // Exhaust should be 4x3 (4 rows, 3 columns)
+            assert_eq!(sprite.cells.len(), 4);
+            for row in &sprite.cells {
+                assert_eq!(row.len(), 3);
+            }
+        }
+    }
+
+    #[test]
+    fn test_exhaust_sprite_animation() {
+        // Exhaust should change over frames
+        let sprite1 = ExhaustSprite::for_direction(Direction::Up, 0);
+        let sprite2 = ExhaustSprite::for_direction(Direction::Up, 4);
+        let sprite3 = ExhaustSprite::for_direction(Direction::Up, 8);
+
+        // At least one cell should be different between frames
+        let cells_match = |s1: &ExhaustSprite, s2: &ExhaustSprite| {
+            s1.cells.iter().flatten().zip(s2.cells.iter().flatten())
+                .all(|(c1, c2)| c1.ch == c2.ch && c1.fg == c2.fg)
+        };
+
+        // Animation cycles, so frames 0 and 16 should match (4 phases * 4 frames each)
+        assert!(!cells_match(&sprite1, &sprite2) || !cells_match(&sprite2, &sprite3),
+            "Exhaust should animate");
+    }
+
+    #[test]
+    fn test_exhaust_offset_opposite_to_direction() {
+        // Exhaust should appear behind the ship (opposite to movement direction)
+        let (_x, y) = ExhaustSprite::offset_for_direction(Direction::Up);
+        assert!(y > 0, "Up-facing ship exhaust should be below (positive y)");
+
+        let (_x, y) = ExhaustSprite::offset_for_direction(Direction::Down);
+        assert!(y < 0, "Down-facing ship exhaust should be above (negative y)");
+
+        let (x, _y) = ExhaustSprite::offset_for_direction(Direction::Left);
+        assert!(x > 0, "Left-facing ship exhaust should be to right (positive x)");
+
+        let (x, _y) = ExhaustSprite::offset_for_direction(Direction::Right);
+        assert!(x < 0, "Right-facing ship exhaust should be to left (negative x)");
+    }
+
+    // ==================== Renderer Ship Cell Tests ====================
+
+    #[test]
+    fn test_renderer_get_ship_cell_center() {
+        let renderer = Renderer::new(true);
+
+        // Center of ship (offset 0,0) should return a cell
+        let cell = renderer.get_ship_cell(Direction::Up, 0, 0);
+        assert!(cell.is_some(), "Ship center should exist");
+    }
+
+    #[test]
+    fn test_renderer_get_ship_cell_bounds() {
+        let renderer = Renderer::new(true);
+
+        // Ship cells at corners of 3x3 grid
+        let corners = [(-1, -1), (1, -1), (-1, 1), (1, 1)];
+        for (ox, oy) in corners {
+            // At least some corners should have content (not all are empty)
+            let _ = renderer.get_ship_cell(Direction::Up, ox, oy);
+        }
+
+        // Far outside ship should return None (unless it's exhaust)
+        let cell = renderer.get_ship_cell(Direction::Up, 10, 10);
+        assert!(cell.is_none(), "Far from ship should be None");
+    }
+
+    #[test]
+    fn test_renderer_get_ship_cell_exhaust_area() {
+        let renderer = Renderer::new(true);
+
+        // For Up-facing ship, exhaust should be below (positive y offset)
+        let (ex, ey) = ExhaustSprite::offset_for_direction(Direction::Up);
+        // Check a cell in the exhaust area
+        let cell = renderer.get_ship_cell(Direction::Up, ex + 1, ey);
+        assert!(cell.is_some(), "Exhaust area should have content");
+    }
+
+    #[test]
+    fn test_renderer_get_ship_cell_all_directions() {
+        let renderer = Renderer::new(true);
+        let directions = [
+            Direction::Up, Direction::Down, Direction::Left, Direction::Right,
+            Direction::UpRight, Direction::UpLeft, Direction::DownRight, Direction::DownLeft,
+        ];
+
+        for dir in directions {
+            // Every direction should have a ship center
+            let cell = renderer.get_ship_cell(dir, 0, 0);
+            assert!(cell.is_some(), "Ship center should exist for {:?}", dir);
+        }
+    }
+
     // ==================== Config Tests ====================
 
     #[test]
@@ -1217,5 +2034,307 @@ mod tests {
             assert!(p.ends_with("config.json"));
             assert!(p.to_string_lossy().contains("exospace"));
         }
+    }
+
+    // ==================== ChatMessage Tests ====================
+
+    #[test]
+    fn test_chat_message_new() {
+        let msg = ChatMessage::new("Hello".to_string(), 0xFF0000);
+        assert_eq!(msg.text, "Hello");
+        assert_eq!(msg.color, 0xFF0000);
+    }
+
+    #[test]
+    fn test_chat_message_system() {
+        let msg = ChatMessage::system("System message");
+        assert_eq!(msg.text, "System message");
+        assert_eq!(msg.color, 0xFFFF00); // Yellow
+    }
+
+    #[test]
+    fn test_chat_message_user() {
+        let msg = ChatMessage::user("User input");
+        assert_eq!(msg.text, "User input");
+        assert_eq!(msg.color, 0x00FF00); // Green
+    }
+
+    #[test]
+    fn test_chat_message_error() {
+        let msg = ChatMessage::error("Error!");
+        assert_eq!(msg.text, "Error!");
+        assert_eq!(msg.color, 0xFF4444); // Red
+    }
+
+    // ==================== ChatWindow Tests ====================
+
+    #[test]
+    fn test_chat_window_default() {
+        let chat = ChatWindow::default();
+        assert!(!chat.active);
+        assert!(chat.input.is_empty());
+        assert_eq!(chat.cursor, 0);
+        assert!(chat.messages.is_empty());
+    }
+
+    #[test]
+    fn test_chat_window_new_has_welcome_message() {
+        let chat = ChatWindow::new();
+        assert_eq!(chat.messages.len(), 1);
+        assert!(chat.messages[0].text.contains("Welcome"));
+    }
+
+    #[test]
+    fn test_chat_window_toggle() {
+        let mut chat = ChatWindow::default();
+        assert!(!chat.active);
+
+        chat.toggle();
+        assert!(chat.active);
+
+        chat.toggle();
+        assert!(!chat.active);
+    }
+
+    #[test]
+    fn test_chat_window_open_close() {
+        let mut chat = ChatWindow::default();
+
+        chat.open();
+        assert!(chat.active);
+
+        chat.insert_char('h');
+        chat.insert_char('i');
+        assert_eq!(chat.input, "hi");
+
+        chat.close();
+        assert!(!chat.active);
+        assert!(chat.input.is_empty());
+        assert_eq!(chat.cursor, 0);
+    }
+
+    #[test]
+    fn test_chat_window_insert_char() {
+        let mut chat = ChatWindow::default();
+        chat.insert_char('a');
+        chat.insert_char('b');
+        chat.insert_char('c');
+
+        assert_eq!(chat.input, "abc");
+        assert_eq!(chat.cursor, 3);
+    }
+
+    #[test]
+    fn test_chat_window_backspace() {
+        let mut chat = ChatWindow::default();
+        chat.insert_char('a');
+        chat.insert_char('b');
+        chat.insert_char('c');
+
+        chat.backspace();
+        assert_eq!(chat.input, "ab");
+        assert_eq!(chat.cursor, 2);
+
+        chat.backspace();
+        assert_eq!(chat.input, "a");
+
+        chat.backspace();
+        assert!(chat.input.is_empty());
+
+        // Backspace on empty should do nothing
+        chat.backspace();
+        assert!(chat.input.is_empty());
+    }
+
+    #[test]
+    fn test_chat_window_cursor_movement() {
+        let mut chat = ChatWindow::default();
+        chat.insert_char('a');
+        chat.insert_char('b');
+        chat.insert_char('c');
+        assert_eq!(chat.cursor, 3);
+
+        chat.cursor_left();
+        assert_eq!(chat.cursor, 2);
+
+        chat.cursor_left();
+        assert_eq!(chat.cursor, 1);
+
+        chat.cursor_right();
+        assert_eq!(chat.cursor, 2);
+
+        chat.cursor_home();
+        assert_eq!(chat.cursor, 0);
+
+        chat.cursor_end();
+        assert_eq!(chat.cursor, 3);
+    }
+
+    #[test]
+    fn test_chat_window_delete() {
+        let mut chat = ChatWindow::default();
+        chat.insert_char('a');
+        chat.insert_char('b');
+        chat.insert_char('c');
+        chat.cursor_home();
+
+        chat.delete();
+        assert_eq!(chat.input, "bc");
+
+        chat.delete();
+        assert_eq!(chat.input, "c");
+    }
+
+    #[test]
+    fn test_chat_window_insert_at_cursor() {
+        let mut chat = ChatWindow::default();
+        chat.insert_char('a');
+        chat.insert_char('c');
+        chat.cursor_left();
+        chat.insert_char('b');
+
+        assert_eq!(chat.input, "abc");
+    }
+
+    #[test]
+    fn test_chat_window_submit() {
+        let mut chat = ChatWindow::default();
+        chat.open();
+        chat.insert_char('h');
+        chat.insert_char('i');
+
+        let result = chat.submit();
+        assert_eq!(result, Some("hi".to_string()));
+        assert!(chat.input.is_empty());
+        assert!(!chat.active);
+    }
+
+    #[test]
+    fn test_chat_window_submit_empty() {
+        let mut chat = ChatWindow::default();
+        chat.open();
+
+        let result = chat.submit();
+        assert!(result.is_none());
+        assert!(!chat.active);
+    }
+
+    #[test]
+    fn test_chat_window_add_message() {
+        let mut chat = ChatWindow::default();
+        chat.add_message(ChatMessage::system("Test 1"));
+        chat.add_message(ChatMessage::system("Test 2"));
+
+        assert_eq!(chat.messages.len(), 2);
+        assert_eq!(chat.messages[0].text, "Test 1");
+        assert_eq!(chat.messages[1].text, "Test 2");
+    }
+
+    #[test]
+    fn test_chat_window_max_messages() {
+        let mut chat = ChatWindow::default();
+        chat.max_messages = 3;
+
+        chat.add_message(ChatMessage::system("1"));
+        chat.add_message(ChatMessage::system("2"));
+        chat.add_message(ChatMessage::system("3"));
+        chat.add_message(ChatMessage::system("4"));
+
+        assert_eq!(chat.messages.len(), 3);
+        assert_eq!(chat.messages[0].text, "2"); // First message removed
+        assert_eq!(chat.messages[2].text, "4");
+    }
+
+    #[test]
+    fn test_chat_window_visible_messages() {
+        let mut chat = ChatWindow::default();
+        chat.visible_lines = 2;
+
+        chat.add_message(ChatMessage::system("1"));
+        chat.add_message(ChatMessage::system("2"));
+        chat.add_message(ChatMessage::system("3"));
+
+        let visible: Vec<_> = chat.visible_messages().collect();
+        assert_eq!(visible.len(), 2);
+        assert_eq!(visible[0].text, "2");
+        assert_eq!(visible[1].text, "3");
+    }
+
+    // ==================== ChatCommand Tests ====================
+
+    #[test]
+    fn test_chat_process_help_command() {
+        let mut chat = ChatWindow::default();
+        let cmd = chat.process_input("/help");
+        assert!(cmd.is_none()); // Help just adds messages
+        assert!(!chat.messages.is_empty());
+    }
+
+    #[test]
+    fn test_chat_process_quit_command() {
+        let mut chat = ChatWindow::default();
+        let cmd = chat.process_input("/quit");
+        assert_eq!(cmd, Some(ChatCommand::Quit));
+    }
+
+    #[test]
+    fn test_chat_process_pos_command() {
+        let mut chat = ChatWindow::default();
+        let cmd = chat.process_input("/pos");
+        assert_eq!(cmd, Some(ChatCommand::ShowPosition));
+    }
+
+    #[test]
+    fn test_chat_process_goto_command() {
+        let mut chat = ChatWindow::default();
+        let cmd = chat.process_input("/goto 100 200");
+        assert_eq!(cmd, Some(ChatCommand::Teleport(100, 200)));
+    }
+
+    #[test]
+    fn test_chat_process_goto_invalid() {
+        let mut chat = ChatWindow::default();
+        let cmd = chat.process_input("/goto");
+        assert!(cmd.is_none());
+        // Should have added an error message
+        assert!(chat.messages.iter().any(|m| m.text.contains("Usage")));
+    }
+
+    #[test]
+    fn test_chat_process_fx_command() {
+        let mut chat = ChatWindow::default();
+        let cmd = chat.process_input("/fx");
+        assert_eq!(cmd, Some(ChatCommand::ToggleEffects));
+    }
+
+    #[test]
+    fn test_chat_process_unknown_command() {
+        let mut chat = ChatWindow::default();
+        let cmd = chat.process_input("/unknowncmd");
+        assert!(cmd.is_none());
+        assert!(chat.messages.iter().any(|m| m.text.contains("Unknown command")));
+    }
+
+    #[test]
+    fn test_chat_process_regular_message() {
+        let mut chat = ChatWindow::default();
+        let cmd = chat.process_input("Hello world");
+        assert!(cmd.is_none());
+        assert!(chat.messages.iter().any(|m| m.text.contains("You: Hello world")));
+    }
+
+    #[test]
+    fn test_chat_display_cursor_pos() {
+        let mut chat = ChatWindow::default();
+        chat.insert_char('a');
+        chat.insert_char('b');
+        chat.insert_char('c');
+        assert_eq!(chat.display_cursor_pos(), 3);
+
+        chat.cursor_left();
+        assert_eq!(chat.display_cursor_pos(), 2);
+
+        chat.cursor_home();
+        assert_eq!(chat.display_cursor_pos(), 0);
     }
 }
